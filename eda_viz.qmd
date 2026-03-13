@@ -1,0 +1,793 @@
+---
+title: "36-460/660 Project"
+author: "Sam Archie"
+date: 04/09/2025
+format: pdf
+---
+
+```{r, 'Imports'}
+library(devtools)
+library(conflicted)
+library(tidyverse)
+library(baseballr)
+library(furrr)
+library(purrr)
+library(lubridate)
+library(future)
+library(lme4)
+library(brms)
+library(Lahman)
+library(scales)
+library(teamcolors)
+library(ggimage)
+library(readr)
+```
+
+```{r, 'Collect Hitting Data'}
+at_bats <- read_csv("Statcast_At_Bats_Data.csv")
+```
+
+```{r, 'Import Statcast data'}
+statcast_data <- read_csv("/Users/samanthaarchie/Dropbox/Graduate School/CMU/03_Spring 2025/Sports Analytics/SA_Group Project/Statcast_Batter_Data.csv")
+at_bats <- read_csv("Statcast_At_Bats_Data.csv")
+```
+
+```{r, 'Get batting average data'}
+# Define events that count as hits
+hit_events <- c("single", "double", "triple", "home_run")
+
+# Calculate season batting average
+season_batting_avg <- statcast_data %>%
+  filter(!is.na(events)) %>%
+  mutate(
+    year = year(game_date),
+    is_hit = events %in% hit_events,
+    is_at_bat = !(events %in% c("walk", "hit_by_pitch", "intent_walk", "sac_bunt", "sac_fly", "catcher_interf"))
+  ) %>%
+  group_by(player_name, batter, year) %>%
+  summarise(
+    AB = sum(is_at_bat, na.rm = TRUE),  # Total At-Bats in the season
+    H = sum(is_hit, na.rm = TRUE),       # Total Hits in the season
+    AVG = if_else(AB > 0, H / AB, NA_real_),  # Batting Average
+    .groups = "drop"
+  ) %>%
+  filter(AB >= 100) %>%  # Only keep players who had 100+ at-bats
+  filter(year >= 2015) %>%
+  arrange(desc(AVG))  # Optional: sort by AVG
+
+# View top batting averages
+head(season_batting_avg, 10)
+```
+
+```{r, 'Collect Hitting Data'}
+# Filter Batting data from 2000 to 2024
+batting_avg <- Batting %>%
+  filter(yearID >= 2000, yearID <= 2025) %>%
+  group_by(playerID, yearID) %>%
+  summarise(
+    AB = sum(AB, na.rm = TRUE),
+    H = sum(H, na.rm = TRUE),
+    AVG = round(H / AB, 3),
+    .groups = "drop"
+  ) %>%
+  filter(AB > 100)
+
+# Join with People table to get player names
+batting_avg_named <- batting_avg %>%
+  left_join(Lahman::People, by = "playerID") %>%
+  mutate(player_name = paste(nameFirst, nameLast)) %>%
+  select(playerID, player_name, yearID, AB, H, AVG)
+```
+
+```{r, 'Visualize At-Bats Over Time'}
+# Get average batting average per year
+league_avg <- season_batting_avg %>%
+  group_by(year) %>%
+  summarise(
+    AB = sum(AB, na.rm = TRUE),
+    H = sum(H, na.rm = TRUE),
+    AVG = round(H / AB, 3)
+  )
+
+# Generate graph
+ggplot(league_avg, aes(x = yearID, y = AVG)) +
+  geom_line(linewidth = 1.2, color = "#09539e") +
+  geom_point(size = 2, color = "#09539e") +
+  scale_x_continuous(breaks = 2015:2025) +
+  scale_y_continuous(limits = c(0.230, 0.280),
+  labels = label_number(accuracy = 0.001)) +
+  labs(
+    #title = "MLB League Batting Average (2015–2023)",
+    x = "Season",
+    y = "Batting Average"
+  ) +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 20),
+    axis.title = element_text(size = 16),
+    axis.text = element_text(size = 14),
+    panel.grid.minor = element_blank()
+  )
+```
+
+```{r, 'Visualize At-Bats Over Time for longer time period'}
+# Get average batting average per year
+league_avg <- Batting %>%
+  filter(yearID >= 2000) %>%
+  group_by(playerID, yearID) %>%
+  summarise(
+    AB = sum(AB, na.rm = TRUE),
+    H = sum(H, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  filter(AB >= 100) %>%
+  group_by(yearID) %>%
+  summarise(
+    total_AB = sum(AB, na.rm = TRUE),
+    total_H = sum(H, na.rm = TRUE),
+    AVG = total_H / total_AB,
+    .groups = "drop"
+  )
+
+# Generate graph
+ggplot(league_avg, aes(x = yearID, y = AVG)) +
+  geom_line(linewidth = 1.2, color = "#09539e") +
+  geom_point(size = 2, color = "#09539e") +
+  scale_y_continuous(limits = c(0.230, 0.280),
+  labels = label_number(accuracy = 0.001)) +
+  labs(
+    #title = "MLB League Batting Average (1990–2023)",
+    x = "Season",
+    y = "Batting Average"
+  ) +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 20),
+    axis.title = element_text(size = 16),
+    axis.text = element_text(size = 14),
+    panel.grid.minor = element_blank()
+  )
+```
+
+```{r, 'Batting average decline with baseballs as points'}
+# Use only seasons from 1993 onwards
+league_avg <- Batting %>%
+  filter(yearID >= 2000) %>%
+  group_by(playerID, yearID) %>%
+  summarise(
+    AB = sum(AB, na.rm = TRUE),
+    H = sum(H, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  filter(AB >= 100) %>%
+  group_by(yearID) %>%
+  summarise(
+    total_AB = sum(AB, na.rm = TRUE),
+    total_H = sum(H, na.rm = TRUE),
+    AVG = total_H / total_AB,
+    .groups = "drop"
+  ) %>%
+  mutate(image = "baseball.png")  # Path to your baseball image
+
+# Fit linear model
+model <- lm(AVG ~ yearID, data = league_avg)
+r_squared <- summary(model)$r.squared
+pct_decrease <- round((1 - (tail(league_avg$AVG, 1) / head(league_avg$AVG, 1))) * 100, 1)
+
+ggplot(league_avg, aes(x = yearID, y = AVG)) +
+  # Add circular gray points behind baseballs
+  geom_point(color = "#333333", size = 5.5) +  # dark gray shadow
+  geom_image(aes(image = image), size = .1) +
+  geom_smooth(method = "lm", se = TRUE, color = "#09539e") +
+  scale_x_continuous(
+  breaks = seq(1993, 2023, 2)) +
+  scale_y_continuous(limits = c(0.225, 0.3),
+                     labels = scales::number_format(accuracy = 0.001)) +
+  theme_minimal(base_size = 14) +
+  theme(
+    panel.background = element_rect(fill = "#f2f2f2", color = NA),
+    plot.background = element_rect(fill = "white", color = NA),
+    axis.text = element_text(size = 12),
+    axis.text.x = element_text(angle = 60, hjust = 1),
+    panel.grid.minor = element_blank()
+  ) +
+  labs(
+    x = "Year",
+    y = "Batting Average",
+    caption = "Minimum 100 AB per season"
+  )
+```
+
+```{r, 'Batting average decline with baseballs as points'}
+# Use only seasons from 2015 onwards
+league_avg <- Batting %>%
+  filter(yearID >= 2015) %>%
+  group_by(playerID, yearID) %>%
+  summarise(
+    AB = sum(AB, na.rm = TRUE),
+    H = sum(H, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  filter(AB >= 100) %>%
+  group_by(yearID) %>%
+  summarise(
+    total_AB = sum(AB, na.rm = TRUE),
+    total_H = sum(H, na.rm = TRUE),
+    AVG = total_H / total_AB,
+    .groups = "drop"
+  ) %>%
+  mutate(image = "baseball.png")  # Path to your baseball image
+
+# Fit linear model
+model <- lm(AVG ~ yearID, data = league_avg)
+r_squared <- summary(model)$r.squared
+pct_decrease <- round((1 - (tail(league_avg$AVG, 1) / head(league_avg$AVG, 1))) * 100, 1)
+
+ggplot(league_avg, aes(x = yearID, y = AVG)) +
+  # Add circular gray points behind baseballs
+  geom_point(color = "#333333", size = 5) +  # dark gray shadow
+  geom_image(aes(image = image), size = .1) +
+  geom_smooth(method = "lm", se = TRUE, color = "#09539e") +
+  scale_x_continuous(
+  breaks = seq(2015, 2023, 1)) +
+  scale_y_continuous(limits = c(0.23, 0.28),
+                     labels = scales::number_format(accuracy = 0.001)) +
+  theme_minimal(base_size = 14) +
+  theme(
+    panel.background = element_rect(fill = "#f2f2f2", color = NA),
+    plot.background = element_rect(fill = "white", color = NA),
+    plot.title = element_text(hjust = 0.5, size = 20, face = "bold"),
+    axis.text = element_text(size = 12),
+    axis.text.x = element_text(angle = 60, hjust = 1),
+    panel.grid.minor = element_blank()
+    ) +
+  labs(
+    title = "MLB Batting Average by Season (2015-2023)",
+    x = "Year",
+    y = "Batting Average",
+    caption = "Minimum 100 at bats per season"
+  )
+```
+
+```{r, 'Top 10 batters'}
+# Use only seasons from 1993 onwards
+top_ba_yearly <- Batting %>%
+  filter(yearID >= 1993) %>%
+  group_by(playerID, yearID) %>%
+  summarise(
+    H = sum(H, na.rm = TRUE),
+    AB = sum(AB, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  filter(AB >= 300) %>%  # Filter for qualified batters
+  mutate(AVG = H / AB) %>%
+  group_by(yearID) %>%
+  arrange(desc(AVG)) %>%
+  slice_head(n = 10) %>%
+  summarise(
+    top10_avg = mean(AVG, na.rm = TRUE)
+  ) %>%
+  ungroup() %>%
+  mutate(image = "/Users/samanthaarchie/Dropbox/Graduate School/CMU/03_Spring 2025/Sports Analytics/SA_Group Project/baseball.png")  # Path to your baseball image
+
+# Fit linear model
+model <- lm(top10_avg ~ yearID, data = top_ba_yearly)
+r_squared <- summary(model)$r.squared
+pct_decrease <- round((1 - (tail(top_ba_yearly$top10_avg, 1) / head(top_ba_yearly$top10_avg, 1))) * 100, 1)
+
+ggplot(top_ba_yearly, aes(x = yearID, y = top10_avg)) +
+  geom_image(aes(image = image), size = 0.06) +
+  geom_smooth(method = "lm", se = TRUE, color = "#09539e") +
+  scale_y_continuous(labels = scales::number_format(accuracy = 0.001)) +
+  theme_minimal(base_size = 14) +
+  theme(axis.text.x = element_text(angle = 60, hjust = 1)) +
+  labs(
+    title = "MLB Top 10 Batting Averages by Year (1993–2024)",
+    x = "Year",
+    y = "Batting Average"
+  ) +
+  annotate("text", x = 1995, y = 0.313, 
+           label = paste0("Overall decrease (1993–2024): -", pct_decrease, " %"), size = 5, hjust = 0) +
+  coord_cartesian(clip = "off")
+```
+
+```{r, 'Visualize grouped batting average'}
+# Calculate batting average per player-season
+batting_dist <- Batting %>%
+  filter(yearID >= 2015, yearID <= 2023) %>%
+  group_by(playerID, yearID) %>%
+  summarise(
+    AB = sum(AB, na.rm = TRUE),
+    H = sum(H, na.rm = TRUE),
+    AVG = H / AB,
+    .groups = "drop"
+  ) %>%
+  filter(AB >= 100) %>%
+  mutate(
+    avg_bin = case_when(
+      AVG < 0.250 ~ "< .250",
+      AVG < 0.275 ~ ".250–.275",
+      AVG < 0.300 ~ ".275–.300",
+      AVG >= 0.300 ~ "> .300"
+    )
+  )
+
+# Reorder factor levels so that < .250 is at the bottom
+batting_dist$avg_bin <- factor(
+  batting_dist$avg_bin,
+  levels = c("< .250", ".250–.275", ".275–.300", "> .300")  # bottom to top
+)
+
+bin_dist <- batting_dist %>%
+  group_by(yearID, avg_bin) %>%
+  summarise(count = n(), .groups = "drop") %>%
+  group_by(yearID) %>%
+  mutate(
+    pct = count / sum(count) * 100,
+    pct_label = scales::percent(pct / 100, accuracy = 1)
+  ) %>%
+  ungroup() %>%
+  arrange(yearID, avg_bin) %>%
+  group_by(yearID) %>%
+  mutate(position = (sum(pct) - cumsum(pct)) + (pct / 2))
+
+# FIX: Redefine the factor so it is REVERSED
+batting_dist$avg_bin <- factor(
+  batting_dist$avg_bin,
+  levels = c("> .300", ".275–.300", ".250–.275", "< .250")  # HIGH to LOW for stacking
+)
+
+bin_dist <- batting_dist %>%
+  group_by(yearID, avg_bin) %>%
+  summarise(count = n(), .groups = "drop") %>%
+  group_by(yearID) %>%
+  mutate(
+    pct = count / sum(count) * 100,
+    pct_label = scales::percent(pct / 100, accuracy = 1)
+  ) %>%
+  ungroup() %>%
+  arrange(yearID, avg_bin) %>%
+  group_by(yearID) %>%
+  mutate(position = (sum(pct) - cumsum(pct)) + pct/2)
+
+# Re-factor again for safety
+bin_dist$avg_bin <- factor(
+  bin_dist$avg_bin,
+  levels = c("> .300", ".275–.300", ".250–.275", "< .250")
+)
+
+# PLOT
+ggplot(bin_dist, aes(x = factor(yearID), y = pct, fill = avg_bin)) +
+  geom_bar(stat = "identity", width = 0.8) +
+  scale_fill_manual(
+    values = c(
+      "< .250" = "#d73027",
+      ".250–.275" = "#fc8d59",
+      ".275–.300" = "#fee08b",
+      "> .300" = "#91cf60"
+    ),
+    guide = guide_legend(reverse = TRUE)  # 🔥 KEY: REVERSE the legend and stacking
+  ) +
+  geom_text(
+  aes(
+    y = position,
+    label = pct_label,
+    color = avg_bin  # <-- map color dynamically!
+  ),
+  size = 4
+) +
+scale_color_manual(
+  values = c(
+    "< .250" = "white",
+    ".250–.275" = "white",
+    ".275–.300" = "black",
+    "> .300" = "black"
+  ),
+  guide = "none"  # <-- hide the color legend
+) +
+  scale_x_discrete(
+    breaks = 2015:2023
+  ) +
+  labs(
+    title = "Distribution of Batting Averages by Season (2015–2023)",
+    x = "Season",
+    y = "Percent of Players",
+    caption = "Minimum 100 at bats per season",
+    fill = "Batting Avg"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 20, face = "bold"),
+    axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1),
+    panel.grid.minor = element_blank(),
+    panel.grid.major.x = element_blank()
+  ) +
+  coord_cartesian(clip = "off")
+
+```
+
+```{r, 'Collect Pitching Data'}
+# Function to get fastballs for a given year
+get_fastballs_by_year <- function(year) {
+  message("Fetching fastballs for ", year)
+  
+  start <- paste0(year, "-01-01")
+  end <- paste0(year, "-12-31")
+
+  url <- paste0("https://baseballsavant.mlb.com/statcast_search/csv?",
+                "all=true&hfPT=FF&hfAB=&hfBBT=&hfPR=&hfZ=&stadium=&hfBBL=&hfNewZones=&",
+                "hfGT=R%7CPO%7CS%7C&hfC&hfSea=", year, "&hfSit=&hfOuts=&opponent=&",
+                "pitcher_throws=&batter_stands=&hfSA=&player_type=pitcher&hfInfield=&team=&",
+                "position=&hfOutfield=&hfRO=&home_road=&game_date_gt=", start,
+                "&game_date_lt=", end,
+                "&hfFlag=&hfPull=&metric_1=&hfInn=&min_pitches=0&min_results=0&group_by=name&",
+                "sort_col=pitches&player_event_sort=velocity&sort_order=desc&min_abs=0&type=details")
+  
+  df <- tryCatch(read_csv(url, show_col_types = FALSE), error = function(e) return(NULL))
+  
+  if (is.null(df) || !"release_speed" %in% names(df)) return(NULL)
+
+  df %>%
+    mutate(season = year) %>%
+    select(season, release_speed)
+}
+
+# Download and combine data
+years <- 2015:2024
+fastball_data <- map_dfr(years, get_fastballs_by_year)
+
+# Compute average velocity per year
+avg_velocity <- fastball_data %>%
+  group_by(season) %>%
+  summarise(avg_velocity = mean(release_speed, na.rm = TRUE))
+
+```
+```{r, 'Visualize pitch velocity over time'}
+ggplot(avg_velocity, aes(x = season, y = avg_velocity)) +
+  geom_line(linewidth = 1.2, color = "steelblue") +
+  geom_point(size = 2, color = "steelblue") +
+  scale_x_continuous(breaks = 2015:2024) +
+  scale_y_continuous(limits = c(90, 97),
+                     labels = label_number(accuracy = 0.1)) +
+  labs(
+    title = "Average MLB Fastball Velocity (2015–2024)",
+    x = "Season",
+    y = "Fastball Velocity (mph)"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5),
+    panel.grid.minor = element_blank()
+  )
+```
+
+```{r, 'Fastball usage over time'}
+# Function to get pitch types per season
+get_pitch_types <- function(year) {
+  message("Fetching data for ", year)
+  
+  start <- paste0(year, "-01-01")
+  end <- paste0(year, "-12-31")
+  
+  url <- paste0("https://baseballsavant.mlb.com/statcast_search/csv?",
+                "all=true&hfPT=&hfAB=&hfBBT=&hfPR=&hfZ=&stadium=&hfBBL=&hfNewZones=&",
+                "hfGT=R%7CPO%7CS%7C&hfC&hfSea=", year, "&hfSit=&hfOuts=&opponent=&",
+                "pitcher_throws=&batter_stands=&hfSA=&player_type=pitcher&hfInfield=&team=&",
+                "position=&hfOutfield=&hfRO=&home_road=&game_date_gt=", start,
+                "&game_date_lt=", end,
+                "&hfFlag=&hfPull=&metric_1=&hfInn=&min_pitches=0&min_results=0&group_by=name&",
+                "sort_col=pitches&player_event_sort=velocity&sort_order=desc&min_abs=0&type=details")
+  
+  df <- tryCatch(read_csv(url, show_col_types = FALSE), error = function(e) return(NULL))
+  
+  if (is.null(df) || !"pitch_type" %in% names(df)) return(NULL)
+  
+  df %>%
+    mutate(season = year) %>%
+    select(season, pitch_type)
+}
+
+# Download pitch data for each year
+years <- 2015:2024
+pitch_data <- map_dfr(years, get_pitch_types)
+
+fastball_usage <- pitch_data %>%
+  group_by(season) %>%
+  summarise(
+    total_pitches = n(),
+    fastballs = sum(pitch_type == "FF", na.rm = TRUE),
+    ff_pct = round(100 * fastballs / total_pitches, 1)
+  )
+```
+```{r, Generate visualization: fastball usage over time}
+ggplot(fastball_usage, aes(x = season, y = ff_pct)) +
+  geom_line(linewidth = 1.2, color = "darkred") +
+  geom_point(size = 2, color = "darkred") +
+  scale_x_continuous(breaks = 2015:2024) +
+  scale_y_continuous(
+    labels = scales::label_number(suffix = "%"),
+    limits = c(25, 50)  # adjust depending on trend
+  ) +
+  labs(
+    title = "Fastball (4-Seam) Usage in MLB (2015–2024)",
+    x = "Season",
+    y = "Fastball Usage (%)"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5),
+    panel.grid.minor = element_blank()
+  )
+```
+```{r, 'Player age over time'}
+# Join Batting with birth year/month/day
+batting_with_age <- Batting %>%
+  filter(yearID >= 2015, yearID <= 2024) %>%
+  left_join(People %>% select(playerID, birthYear, birthMonth, birthDay), by = "playerID") %>%
+  filter(!is.na(birthYear), AB >= 1) %>%  # Filter out players with no birth info and no AB
+  mutate(
+    birth_date = make_date(birthYear, birthMonth, birthDay),
+    age = yearID - year(birth_date) - if_else(month(birth_date) > 6, 1, 0)  # estimate age at mid-season
+  )
+
+age_summary <- batting_with_age %>%
+  group_by(yearID) %>%
+  summarise(
+    mean_age = round(mean(age, na.rm = TRUE), 2),
+    median_age = round(median(age, na.rm = TRUE), 2),
+    .groups = "drop"
+  )
+
+age_long <- age_summary %>%
+  pivot_longer(cols = c(mean_age, median_age),
+               names_to = "stat",
+               values_to = "value") %>%
+  mutate(stat = recode(stat, mean_age = "Mean", median_age = "Median"))
+
+ggplot(age_long, aes(x = yearID, y = value, color = stat)) +
+  geom_line(linewidth = 1.2) +
+  geom_point(size = 2) +
+  scale_x_continuous(breaks = 2015:2024) +
+  scale_y_continuous(limits = c(25, 32)) +
+  labs(
+    title = "Mean and Median Age of MLB Batters (2015–2024)",
+    x = "Season",
+    y = "Age",
+    color = "Statistic"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5),
+    panel.grid.minor = element_blank()
+  )
+```
+
+``` {r, 'Batting average by position over time'}
+# Join Batting and Fielding by playerID, yearID, teamID
+batting_pos <- Batting %>%
+  filter(yearID >= 2015, yearID <= 2024) %>%
+  inner_join(Fielding, by = c("playerID", "yearID", "teamID")) %>%
+  filter(!is.na(AB), AB > 0) %>%
+  group_by(playerID, yearID, POS) %>%  # POS = Position field
+  summarise(
+    AB = sum(AB, na.rm = TRUE),
+    H = sum(H, na.rm = TRUE),
+    AVG = H / AB,
+    .groups = "drop"
+  )
+
+batting_by_pos <- batting_pos %>%
+  filter(AB >= 75) %>%
+  group_by(POS) %>%
+  summarise(
+    avg_ba = round(mean(AVG, na.rm = TRUE), 3),
+    n = n(),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(avg_ba))
+
+batting_by_pos$POS <- recode(batting_by_pos$POS,
+                             "1" = "P", "2" = "C", "3" = "1B", "4" = "2B", 
+                             "5" = "3B", "6" = "SS", "7" = "LF",
+                             "8" = "CF", "9" = "RF", "DH" = "DH")
+
+ggplot(batting_by_pos, aes(x = reorder(POS, avg_ba), y = avg_ba)) +
+  geom_col(fill = "steelblue") +
+  scale_y_continuous(limits = c(0,.3)) +
+  geom_text(aes(label = avg_ba), vjust = -0.5, size = 3.5) +
+  labs(
+    title = "Average Batting Average by Position (2015–2024)",
+    x = "Position",
+    y = "Batting Average"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5)
+  )
+```
+
+```{r, 'Batting average by team over time'}
+team_avgs <- Teams %>%
+  filter(yearID >= 2015, yearID <= 2024) %>%
+  mutate(avg = H / AB) %>%
+  select(yearID, teamID, name, franchID, avg)
+
+# Get official MLB team colors
+mlb_colors <- teamcolors::teamcolors %>%
+  filter(league == "mlb") %>%
+  select(name, primary, secondary)
+
+# Join colors to batting data
+team_avgs_colored <- team_avgs %>%
+  left_join(mlb_colors, join_by(name)) %>%
+  filter(!is.na(primary))  # drop teams not matched
+
+ggplot(team_avgs_colored, aes(x = yearID, y = avg, group = franchID, color = franchID)) +
+  geom_line(linewidth = 1) +
+  scale_color_manual(
+    values = setNames(team_avgs_colored$primary, team_avgs_colored$franchID)
+  ) +
+  scale_x_continuous(breaks = 2015:2024) +
+  scale_y_continuous(labels = scales::label_number(accuracy = 0.001)) +
+  labs(
+    title = "MLB Team Batting Averages (2015–2024)",
+    x = "Season",
+    y = "Team Batting Average",
+    color = "Team"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5),
+    panel.grid.minor = element_blank(),
+    legend.position = "none"  # Optional: remove for cleaner look
+  )
+```
+
+```{r, 'Top and bottom team batting averages with median'}
+team_avgs <- Teams %>%
+  filter(yearID >= 2015, yearID <= 2024) %>%
+  mutate(avg = H / AB) %>%
+  select(yearID, franchID, name, avg)
+
+# Compute mean batting average per team over entire period
+overall_team_avg <- team_avgs %>%
+  group_by(franchID) %>%
+  summarise(overall_avg = mean(avg, na.rm = TRUE), .groups = "drop") %>%
+  arrange(desc(overall_avg)) %>%
+  mutate(rank = row_number())
+
+n_teams <- nrow(overall_team_avg)
+median_idx <- which.min(abs(overall_team_avg$rank - median(overall_team_avg$rank)))
+
+selected_franchIDs <- c(
+  head(overall_team_avg$franchID, 5),                    # top 5
+  tail(overall_team_avg$franchID, 5),                    # bottom 5
+  overall_team_avg$franchID[median_idx]                  # median
+)
+
+selected_team_avgs <- team_avgs %>%
+  filter(franchID %in% selected_franchIDs)
+
+mlb_colors <- teamcolors::teamcolors %>%
+  filter(league == "mlb") %>%
+  select(name, primary, secondary)
+
+# Join team colors
+selected_team_avgs_colored <- selected_team_avgs %>%
+  left_join(mlb_colors, join_by(name)) %>%
+  filter(!is.na(primary))
+
+ggplot(selected_team_avgs_colored, aes(x = yearID, y = avg, group = franchID, color = franchID)) +
+  geom_line(linewidth = 1.2) +
+  geom_point(size = 2) +
+  scale_color_manual(values = setNames(selected_team_avgs_colored$primary, selected_team_avgs_colored$franchID)) +
+  scale_x_continuous(breaks = 2015:2024) +
+  scale_y_continuous(labels = scales::label_number(accuracy = 0.001)) +
+  labs(
+    title = "Top 5, Bottom 5, and Median MLB Team Batting Averages (2015–2024)",
+    x = "Season",
+    y = "Team Batting Average",
+    color = "Team"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5),
+    panel.grid.minor = element_blank()
+  )
+```
+
+```{r, '0.300 hitters since 2000'}
+# Step 1: Summarize player-season batting averages
+batting_summary <- Batting %>%
+  filter(yearID >= 2000) %>%
+  group_by(playerID, yearID) %>%
+  summarise(
+    AB = sum(AB, na.rm = TRUE),
+    H = sum(H, na.rm = TRUE),
+    AVG = if_else(AB > 0, H / AB, NA_real_),
+    .groups = "drop"
+  ) %>%
+  filter(AB >= 100)  # Only players with 100+ at-bats
+
+# Step 2: Count number of players hitting over .300 each season
+over_300_counts <- batting_summary %>%
+  filter(AVG > 0.300) %>%
+  group_by(yearID) %>%
+  summarise(
+    num_players_over_300 = n(),
+    .groups = "drop"
+  ) %>%
+  mutate(image = "baseball.png")  # Path to your baseball image
+
+# Step 3: Plot with lm smooth
+ggplot(over_300_counts, aes(x = yearID, y = num_players_over_300)) +
+  # Add circular gray points behind baseballs
+  geom_point(color = "#333333", size = 5) +  # dark gray shadow
+  geom_image(aes(image = image), size = .1) +
+  geom_smooth(method = "lm", se = TRUE, color = "#09539e") +
+  scale_x_continuous(
+  breaks = seq(1993, 2023, 2)) +
+  #scale_y_continuous(limits = c(0.225, 0.3),
+  #                   labels = scales::number_format(accuracy = 0.001)) +
+  theme_minimal(base_size = 14) +
+  theme(
+    panel.background = element_rect(fill = "#f2f2f2", color = NA),
+    plot.background = element_rect(fill = "white", color = NA),
+    axis.text = element_text(size = 12),
+    axis.text.x = element_text(angle = 60, hjust = 1),
+    panel.grid.minor = element_blank()
+  ) +
+  labs(
+    title = "Number of Batters Hitting Over .300 (2000–Present)",
+    x = "Season",
+    y = "Number of Batters",
+    caption = "Minimum 100 AB per season"
+  )
+```
+
+```{r, '0.300 hitters since 2015'}
+# Step 1: Summarize player-season batting averages
+batting_summary <- Batting %>%
+  filter(yearID >= 2015) %>%
+  group_by(playerID, yearID) %>%
+  summarise(
+    AB = sum(AB, na.rm = TRUE),
+    H = sum(H, na.rm = TRUE),
+    AVG = if_else(AB > 0, H / AB, NA_real_),
+    .groups = "drop"
+  ) %>%
+  filter(AB >= 100)  # Only players with 100+ at-bats
+
+# Step 2: Count number of players hitting over .300 each season
+over_300_counts <- batting_summary %>%
+  filter(AVG > 0.300) %>%
+  group_by(yearID) %>%
+  summarise(
+    num_players_over_300 = n(),
+    .groups = "drop"
+  ) %>%
+  mutate(image = "baseball.png")  # Path to your baseball image
+
+# Step 3: Plot with lm smooth
+ggplot(over_300_counts, aes(x = yearID, y = num_players_over_300)) +
+  # Add circular gray points behind baseballs
+  geom_point(color = "#333333", size = 5) +  # dark gray shadow
+  geom_image(aes(image = image), size = .1) +
+  geom_smooth(method = "lm", se = TRUE, color = "#09539e") +
+  scale_x_continuous(
+  breaks = seq(1993, 2023, 2)) +
+  #scale_y_continuous(limits = c(0.225, 0.3),
+  #                   labels = scales::number_format(accuracy = 0.001)) +
+  theme_minimal(base_size = 14) +
+  theme(
+    panel.background = element_rect(fill = "#f2f2f2", color = NA),
+    plot.background = element_rect(fill = "white", color = NA),
+    axis.text = element_text(size = 12),
+    axis.text.x = element_text(angle = 60, hjust = 1),
+    panel.grid.minor = element_blank()
+  ) +
+  labs(
+    title = "Number of Batters Hitting Over .300 (2015–Present)",
+    x = "Season",
+    y = "Number of Batters",
+    caption = "Minimum 100 AB per season"
+  )
+```

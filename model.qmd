@@ -1,0 +1,264 @@
+---
+title: "Sports Analytics Baseball Project"
+author: "Samantha Archie"
+date: 04/09/2025
+format: pdf
+---
+
+```{r, 'Imports'}
+library(tidyverse)
+library(baseballr)
+library(dplyr)
+library(furrr)
+library(purrr)
+library(lubridate)
+library(future)
+library(lme4)
+library(brms)
+```
+
+```{r, 'Collect Data'}
+
+# plan(multisession)
+# 
+# t1 = as.Date("2009-01-01")
+# t2 = as.Date("2025-01-01")
+# 
+# dates <- seq(from=t1, to=t2, by='month')
+# date_window <- tibble(
+#  start = dates,
+#  end = lead(dates, default = t2 - 1)
+# )
+# 
+# # Set column types
+# cols_to_keep <- c(
+#   "pitch_type",
+#   "type",
+#   "release_speed",
+#   "release_pos_x",
+#   "release_pos_y",
+#   "release_pos_z",
+#   "release_extension",
+#   "vx0",
+#   "vy0",
+#   "vz0",
+#   "ax",
+#   "ay",
+#   "az",
+#   "pfx_x",
+#   "pfx_z",
+#   "api_break_z_with_gravity",
+#   "api_break_x_arm",
+#   "api_break_x_batter_in",
+#   "zone",
+#   "game_date",
+#   "game_pk",
+#   "game_year",
+#   "game_type",
+#   "inning",
+#   "inning_topbot",
+#   "home_team",
+#   "away_team",
+#   "bat_score",
+#   "fld_score",
+#   "player_name",
+#   "batter",
+#   "pitcher",
+#   "age_bat",
+#   "events",
+#   "hit_location",
+#   "plate_x",
+#   "plate_z"
+# )
+# 
+# num_cols <- c(
+#   "release_speed",
+#   "release_pos_x",
+#   "release_pos_y",
+#   "release_pos_z",
+#   "release_extension",
+#   "vx0",
+#   "vy0",
+#   "vz0",
+#   "ax",
+#   "ay",
+#   "az",
+#   "pfx_x",
+#   "pfx_z",
+#   "api_break_z_with_gravity",
+#   "api_break_x_arm",
+#   "api_break_x_batter_in",
+#   "zone",
+#   "game_pk",
+#   "game_year",
+#   "inning",
+#   "bat_score",
+#   "fld_score",
+#   "batter",
+#   "pitcher",
+#   "age_bat",
+#   "hit_location",
+#   "plate_x",
+#   "plate_z"
+# )
+# 
+# char_cols <- c(
+#   "pitch_type",
+#   "type",
+#   "game_date",
+#   "game_type",
+#   "inning_topbot",
+#   "home_team",
+#   "away_team",
+#   "player_name",
+#   "events"
+# )
+# 
+# get_month_data <- function(start_date, end_date) {
+#   tryCatch({
+#     message("Fetching: ", start_date, " to ", end_date)
+#     
+#     out <- statcast_search_batters(start_date, end_date)
+#     
+#     if (is.null(out) || nrow(out) == 0) return(NULL)
+#     
+#     # Keep only columns you need and that actually exist
+#     keep_now <- intersect(cols_to_keep, names(out))
+#     out <- out %>% select(all_of(keep_now))
+#     
+#     # Standardize types
+#     existing_num <- intersect(num_cols, names(out))
+#     existing_char <- intersect(char_cols, names(out))
+#     
+#     out <- out %>%
+#       mutate(
+#         across(all_of(existing_char), as.character),
+#         across(all_of(existing_num), ~ suppressWarnings(as.numeric(.x)))
+#       )
+#     
+#     out
+#   }, error = function(e) {
+#     message("Error on: ", start_date, " - ", end_date, " :: ", e$message)
+#     NULL
+#   })
+# }
+# 
+# data_list <- future_map2(date_window$start, date_window$end, get_month_data, .progress=TRUE)
+# 
+# statcast_data <- bind_rows(data_list)
+```
+
+```{r, 'Combine Data'}
+# data_list <- keep(data_list, ~ is.data.frame(.) && nrow(.) > 0)
+# statcast_data <- bind_rows(data_list)
+# head(statcast_data, 10)
+```
+
+```{r, 'Save Data'} 
+# write.csv(statcast_data, "Statcast_Batter_Data.csv")
+# statcast_data <- read_csv("Statcast_Batter_Data.csv")
+```
+
+```{r, 'Filtering Attempts'}
+ab_events <- c(
+  "single", "double", "triple", "home_run", 
+  "field_out", "force_out", "double_play",
+  "grounded_into_double_play", "strikeout",
+  "strikeout_double_play", "triple_play"
+)
+
+at_bats <- statcast_data %>%
+ filter(!is.na(events)) %>%
+ filter(events %in% ab_events)
+```
+
+```{r, 'Save AB Data'}
+# write.csv(at_bats, "Statcast_At_Bats_Data.csv")
+at_bats <- read_csv('Statcast_At_Bats_Data.csv')
+```
+
+```{r, 'Filtering'}
+at_bats <- at_bats %>%
+  filter(game_date > '2015-01-01')
+```
+
+```{r, 'Column Level Filtering'}
+cols_to_keep = c(
+  "pitch_type",
+  "type", # X or S
+  "release_speed",
+  "release_pos_x",
+  "release_pos_y",
+  "release_pos_z",
+  "release_extension",
+  "pfx_x",
+  "pfx_z",
+  "game_date",
+  "game_pk",
+  "game_year",
+  "inning_topbot",
+  "home_team",
+  "away_team",
+  "bat_score",
+  "fld_score",
+  "player_name",
+  "batter",
+  "pitcher",
+  "age_bat",
+  "events",
+  "hit_location",
+  "plate_x",
+  "plate_z"
+)
+
+at_bats <- at_bats |>
+  select(all_of(cols_to_keep))
+```
+
+```{r}
+at_bats <- at_bats %>%
+    mutate(
+      batter_team = ifelse(inning_topbot == "Top", away_team, home_team),
+      pitcher_team = ifelse(inning_topbot == "Top", home_team, away_team)
+  )
+
+at_bats <- at_bats %>%
+  filter(!is.na(release_speed))
+```
+
+```{r, 'outcome_vars'}
+at_bats <- at_bats %>%
+  mutate(
+    hit = as.numeric(events %in% c('single', 'double', 'triple', 'home_run')),
+    outcome_3cat = case_when(
+      events == "single" ~ 2,
+      events %in% c("double", "triple", "home_run") ~ 3,
+      TRUE ~ 1
+      ))
+```
+
+```{r, 'create_model'}
+model_data <- at_bats %>%
+  filter(!is.na(hit), !is.na(release_speed), !is.na(plate_x), !is.na(plate_z),
+         !is.na(pfx_x), !is.na(pfx_z), !is.na(age_bat),
+         !is.na(batter), !is.na(pitcher), !is.na(game_year)) %>%
+      mutate(pitch_type = factor(pitch_type),
+         batter = factor(batter),
+         pitcher = factor(pitcher),
+         game_year = factor(game_year))
+```
+
+```{r, 'hit_model'}
+hit_model <- brm(
+  formula = hit ~ release_speed + plate_x + plate_z + pfx_x + pfx_z + 
+    age_bat + pitch_type + (1 | batter) + (1 | pitcher) + (1 | game_year) + 
+    (1 | batter_team),
+  data = model_data,
+  family = bernoulli,
+  seed = 2025,
+  cores = 6,
+  iter = 2000,
+)
+
+summary(hit_model)
+```
